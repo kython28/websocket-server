@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
-import socket, ssl, struct, threading, os, signal, time, base64, hashlib
+import socket, ssl, struct, threading, os, signal, time, base64, hashlib, sys, gc
 
 class WebsocketClient:
 	def __init__(self, client, addr, callback, hostname):
@@ -41,10 +41,10 @@ class WebsocketClient:
 		header += "Connection: Upgrade\r\n"
 		header += "Sec-WebSocket-Accept: {}\r\n\r\n".format(self.__create_hash(sec_key))
 
-		self.__client.send(header.encode())
+		self.__client.sendall(header.encode())
 
 	def __send_badrequest(self):
-		self.__client.send(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+		self.__client.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
 
 	def __send(self, data, opcode, fin):
 		data_length = len(data)
@@ -57,7 +57,7 @@ class WebsocketClient:
 		else:
 			payload += struct.pack("!BQ", 127, data_length)
 		payload += data
-		self.__client.send(payload)
+		self.__client.sendall(payload)
 
 	def send(self, data):
 		data_length = len(data)
@@ -121,9 +121,12 @@ class WebsocketClient:
 			raise Exception
 
 	def __call__(self):
-		if self.__recv_handshake():
-			self.__callback(self, self.__path, self.__addr)
-		self.__client.close()
+		try:
+			if self.__recv_handshake():
+				self.__callback(self, self.__path, self.__addr)
+		finally:
+			self.__client.close()
+			sys.exit(0)
 
 
 def runNewClient(*opt):
@@ -147,7 +150,7 @@ class WebsocketServer:
 			type=socket.SOCK_STREAM
 		)
 
-		sock.settimeout(0.1)
+		sock.settimeout(1)
 		sock.bind((self.__hostname, self.__port))
 		sock.listen(1)
 
@@ -167,6 +170,6 @@ class WebsocketServer:
 				client, addr = server.accept()
 				threading.Thread(target=runNewClient, args=(client, addr, callback, hostname)).start()
 			except socket.timeout:
-				pass
+				gc.collect()
 			except Exception:
 				pass
