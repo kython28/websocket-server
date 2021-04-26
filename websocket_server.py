@@ -30,18 +30,9 @@ class WebsocketClient:
 
 	def __check_handshake(self, headers):
 		n = 0
-		mandatory_fileds = ["Host", "Origin", "Upgrade", "Connection", "Sec-WebSocket-Key"]
 		fields = dict([tuple(line.split(": ")) for line in headers if line])
-
-		if fields["Host"] != self.__hostname:
+		if fields["Upgrade"] != "websocket":
 			raise Exception
-		elif fields["Upgrade"] != "websocket":
-			raise Exception
-		elif fields["Connection"] != "upgrade":
-			raise Exception
-		elif fields["Origin"].split("//")[1] != self.__hostname:
-			raise Exception
-
 		return fields["Sec-WebSocket-Key"]
 
 	def __send_handshake(self, sec_key):
