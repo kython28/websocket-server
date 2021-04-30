@@ -122,10 +122,14 @@ class WebsocketClient:
 
 	def __call__(self):
 		try:
-			if self.__recv_handshake():
-				self.__callback(self, self.__path, self.__addr)
+			try:
+				if self.__recv_handshake():
+					self.__callback(self, self.__path, self.__addr)
+			except Exception:
+				pass
+			finally:
+				self.__client.close()
 		finally:
-			self.__client.close()
 			sys.exit(0)
 
 
