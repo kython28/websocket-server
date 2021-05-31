@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
-import socket, ssl, struct, threading, os, signal, time, base64, hashlib, sys, gc
+import socket, ssl, struct, threading, os, signal, time, base64, hashlib, sys, gc, traceback
 
 class WebsocketClient:
 	def __init__(self, client, addr, callback, hostname):
@@ -9,6 +9,7 @@ class WebsocketClient:
 		self.__addr = addr
 		self.__callback = callback
 		self.__hostname = hostname
+		self.settimeout = client.settimeout
 
 	def __create_hash(self, sec_key):
 		m = hashlib.sha1()
@@ -126,9 +127,11 @@ class WebsocketClient:
 				if self.__recv_handshake():
 					self.__callback(self, self.__path, self.__addr)
 			except Exception:
-				pass
+				traceback.print_exc()
 			finally:
 				self.__client.close()
+		except Exception:
+			traceback.print_exc()
 		finally:
 			sys.exit(0)
 
@@ -156,7 +159,7 @@ class WebsocketServer:
 
 		sock.settimeout(1)
 		sock.bind((self.__hostname, self.__port))
-		sock.listen(1)
+		sock.listen()
 
 		self.__fd.append(sock)
 
@@ -172,8 +175,11 @@ class WebsocketServer:
 		while True:
 			try:
 				client, addr = server.accept()
+				client.settimeout(1)
 				threading.Thread(target=runNewClient, args=(client, addr, callback, hostname)).start()
 			except socket.timeout:
-				gc.collect()
-			except Exception:
 				pass
+			except Exception:
+				traceback.print_exc()
+
+			gc.collect()
