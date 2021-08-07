@@ -132,8 +132,9 @@ class WebsocketClient:
 				self.__client.close()
 		except Exception:
 			traceback.print_exc()
-		finally:
-			sys.exit(0)
+			sys.stderr.flush()
+			sys.stdout.flush()
+			
 
 
 def runNewClient(*opt):
@@ -175,11 +176,11 @@ class WebsocketServer:
 		while True:
 			try:
 				client, addr = server.accept()
-				client.settimeout(1)
-				threading.Thread(target=runNewClient, args=(client, addr, callback, hostname)).start()
+				client.settimeout(10)
+				threading.Thread(target=runNewClient, args=(client, addr, callback, hostname), daemon=True, name="Websocket client").start()
 			except socket.timeout:
-				pass
+				time.sleep(1)
 			except Exception:
-				traceback.print_exc()
+				pass
 
 			gc.collect()
