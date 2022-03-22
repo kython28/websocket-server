@@ -1,15 +1,23 @@
-#!/usr/bin/python3
+#!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-import socket, ssl, struct, threading, os, signal, time, base64, hashlib, sys, gc, traceback
+# External libraries
+import socket, ssl, struct, threading, hashlib, os, traceback
+import base64, sys
 
-class WebsocketClient:
-	def __init__(self, client, addr, callback, hostname):
+
+class WebSocketClient:
+	def __init__(self, client, addr, callback):
 		self.__client = client
-		self.__addr = addr
 		self.__callback = callback
-		self.__hostname = hostname
+		self.__addr = addr
+
 		self.settimeout = client.settimeout
+		self.close = client.close
+
+	def __del__(self):
+		try: self.close()
+		except Exception: pass
 
 	def __create_hash(self, sec_key):
 		m = hashlib.sha1()
@@ -18,168 +26,186 @@ class WebsocketClient:
 
 	def __recv_handshake(self):
 		try:
-			headers = self.__client.recv(65536)
-			headers = headers.decode().strip().split("\r\n")
-			self.__path = headers[0].split(" ")[1]
-			sec_key = self.__check_handshake(headers[1:])
+			headers = self.__client.recv(1 << 16)
+			headers = headers.decode().split("\r\n")
+			path = headers[0].split(" ")[1]
+			self.headers = dict([tuple(line.split(": ")) for line in headers[1:] if line])
+			sec_key = self.__check_handshake()
 		except Exception:
-			self.__send_badrequest()
-			return False
-		self.__send_handshake(sec_key)
-		return True
+			self.send_badrequest()
+			return
 
-	def __check_handshake(self, headers):
-		n = 0
-		fields = dict([tuple(line.split(": ")) for line in headers if line])
-		if fields["Upgrade"] != "websocket":
-			raise Exception
+		self.__send_handshake(sec_key)
+		return path
+
+	def __check_handshake(self):
+		fields = self.headers
+		assert(fields["Upgrade"] == "websocket")
 		return fields["Sec-WebSocket-Key"]
 
 	def __send_handshake(self, sec_key):
-		header = "HTTP/1.1 101 Switching Protocols\r\n"
-		header += "Upgrade: websocket\r\n"
-		header += "Connection: Upgrade\r\n"
-		header += "Sec-WebSocket-Accept: {}\r\n\r\n".format(self.__create_hash(sec_key))
+		header = b"HTTP/1.1 101 Switching Protocols\r\n"
+		header += b"Upgrade: websocket\r\n"
+		header += b"Connection: Upgrade\r\n"
+		header += "Sec-WebSocket-Accept: {}\r\n\r\n".format(self.__create_hash(sec_key)).encode()
+		self.__client.sendall(header)
 
-		self.__client.sendall(header.encode())
-
-	def __send_badrequest(self):
+	def send_badrequest(self):
 		self.__client.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+		self.close()
 
-	def __send(self, data, opcode, fin):
-		data_length = len(data)
-		payload = struct.pack("!B", (fin << 7)|opcode)
+	def __send(self, data, length, opcode, fin):
+		header = struct.pack("!B", (fin << 7)|opcode)
 
-		if data_length < 126:
-			payload += struct.pack("!B", data_length)
-		elif data_length < (1 << 16):
-			payload += struct.pack("!BH", 126, data_length)
+		if length < 126:
+			header += struct.pack("!B", length)
+		elif length < 65536:
+			header += struct.pack("!BH", 126, length)
 		else:
-			payload += struct.pack("!BQ", 127, data_length)
-		payload += data
-		self.__client.sendall(payload)
+			header += struct.pack("!BQ", 127, length)
 
-	def send(self, data):
-		data_length = len(data)
-		max_size = (1 << 64) - 1
-		fin = 0
-		opcode = (1 if type(data) is str else 2)
-		data = data.encode()
-		for x in range(0, data_length, max_size):
-			y = x+max_size
-			if y > data_length:
-				y = data_length
-				fin = 1
-			self.__send(data, opcode, fin)
-			opcode = 0
+		self.__client.sendall(header)
+		self.__client.sendall(data)
+
+	def send(self, data, opcode=-1):
+		length = len(data)
+		send_ = self.__send
+
+		if opcode < 0:
+			opcode = (1 if type(data) is str else 2)
+		if type(data) is str:
+			data = data.encode()
+
+		if length > (1 << 64)-1:
+			fin = 0
+			for x in range(0, length, (1 << 64) - 1):
+				y = x + (1 << 64) - 1
+				if y > length:
+					y = length
+					fin = 1
+
+				send_(data[x:y], y-x, opcode, fin)
+				opcode = 0
+		else:
+			send_(data, length, opcode, 1)
 
 	def ping(self):
-		self.__send(os.urandom(125), 9, 1)
+		self.__send(os.urandom(125), 125, 9, 1)
 
-	def __recv(self):
-		data = b""
-		hg = True
-		_opcode = 0
-		while True:
-			header, length = struct.unpack("!BB", self.__client.recv(2))
-			fin = header&(1 << 7)
-			opcode = header&((1 << 4) - 1)
-			if hg:
-				_opcode = opcode
+	def __recv_packet(self):
+		_recv = self.__client.recv
 
-			mask = length&(1 << 7)
-			length = length&((1 << 7) - 1)
-			if length == 126:
-				length = struct.unpack("!H", self.__client.recv(2))[0]
-			elif length == 127:
-				length = struct.unpack("!Q", self.__client.recv(8))[0]
+		header, length = struct.unpack("!BB", _recv(2))
+		fin = header&(1 << 7)
+		opcode = header&((1 << 4) - 1)
 
-			if mask:
-				mask_key = self.__client.recv(4)
+		mask = length&(1 << 7)
+		length = length&((1 << 7) - 1)
+		if length == 126:
+			length = struct.unpack("!H", _recv(2))[0]
+		elif length == 127:
+			length = struct.unpack("!Q", _recv(8))[0]
 
-			if length > 0:
-				frame = self.__client.recv(length)
+		if mask:
+			mask_key = _recv(4)
+
+		if length > 0:
+			data = b""
+			with length > 0:
+				frame = _recv(length)
 				if mask:
 					for i in range(length):
 						data += struct.pack("B", frame[i]^mask_key[i%4])
 				else:
 					data += frame
-			if fin: break
-			hg = False
-
-		if _opcode == 1:
-			data = data.decode()
-
-		return data, _opcode
+				length -= len(frame)
+		return data, opcode, fin
 
 	def recv(self):
-		return self.__recv()[0]
+		recv = self.__recv_packet
+		
+		data, opcode, fin = recv()
+		while not(fin):
+			frame, _, fin = recv()
+			data += frame
+
+		if opcode == 1: data = data.decode()
+
+		return data
 
 	def pong(self):
-		data, opcode = self.__recv()
-		if opcode != 10:
-			raise Exception
+		assert(self.__recv_packet()[1] == 10)
 
 	def __call__(self):
 		try:
-			try:
-				if self.__recv_handshake():
-					self.__callback(self, self.__path, self.__addr)
-			except Exception:
-				traceback.print_exc()
-			finally:
-				self.__client.close()
+			path = self.__recv_handshake()
+			if path:
+				self.__callback(self, self.__addr, path)
 		except Exception:
 			traceback.print_exc()
 			sys.stderr.flush()
 			sys.stdout.flush()
-			
 
 
-def runNewClient(*opt):
-	WebsocketClient(*opt)()
-
-class WebsocketServer:
-	def __init__(self, hostname, port, callback, ssl_ctx=None):
+class WebSocketServer:
+	def __init__(self, hostname: str, port: int, callback, ssl_ctx=None):
 		self.__hostname = hostname
 		self.__port = port
 		self.__callback = callback
-		self.__ssl_ctx = ssl_ctx
-		self.__fd = []
 
-	def __del__(self):
-		for fd in self.__fd:
-			fd.close()
-
-	def __call__(self):
 		sock = socket.socket(
 			family=socket.AF_INET,
 			type=socket.SOCK_STREAM
 		)
 
-		sock.settimeout(1)
-		sock.bind((self.__hostname, self.__port))
-		sock.listen()
+		if ssl_ctx:
+			sock = ssl_ctx.wrap_socket(sock, server_side=True)
 
-		self.__fd.append(sock)
+		self.__sock = sock
+		self.close = sock.close
 
-		if self.__ssl_ctx:
-			server = self.__ssl_ctx.wrap_socket(sock, server_side=True)
-			self.__fd.append(server)
-		else: server = sock
-		
+		# Status:
+		# -1 -> Error
+		# 0 -> Offline
+		# 1 -> Online
+		self.__status = 0
+		self.__status_lock = threading.Lock()
+
+	@property
+	def status(self):
+		with self.__status_lock:
+			status = self.__status
+		return status
+
+	def __set_status(self, status):
+		with self.__status_lock:
+			self.__status = status
+
+	def __del__(self):
+		try: self.close()
+		except Exception: pass
+
+	def __call__(self):
+		server = self.__sock
 		callback = self.__callback
-		hostname = self.__hostname
-		if self.__port != 80:
-			hostname += ":"+str(self.__port)
+		
+		try:
+			server.bind((self.__hostname, self.__port))
+			server.listen(socket.SOMAXCONN)
+		except Exception:
+			self.__set_status(-1)
+			return
+
+		callback = self.__callback
+
 		while True:
 			try:
 				client, addr = server.accept()
-				client.settimeout(10)
-				threading.Thread(target=runNewClient, args=(client, addr, callback, hostname), daemon=True, name="Websocket client").start()
-			except socket.timeout:
-				time.sleep(1)
-			except Exception:
-				pass
+				threading.Thread(target=WebSocketClient(client, addr, callback), daemon=True).start()
+			except (Exception, KeyboardInterrupt):
+				break
 
-			gc.collect()
+		try: server.close()
+		except Exception: pass
+
+		self.__set_status(0)
