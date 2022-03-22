@@ -111,7 +111,7 @@ class WebSocketClient:
 
 		if length > 0:
 			data = b""
-			with length > 0:
+			while length > 0:
 				frame = _recv(length)
 				if mask:
 					for i in range(length):
