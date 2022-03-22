@@ -19,10 +19,9 @@ class WebsocketClient:
 	def __recv_handshake(self):
 		try:
 			headers = self.__client.recv(65536)
-			
-			headers = headers.decode().split("\r\n")
+			headers = headers.decode().strip().split("\r\n")
 			self.__path = headers[0].split(" ")[1]
-			sec_key = self.__check_handshake(headers[1:])	
+			sec_key = self.__check_handshake(headers[1:])
 		except Exception:
 			self.__send_badrequest()
 			return False
