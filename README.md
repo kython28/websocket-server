@@ -9,7 +9,7 @@ To create your websocket server in python you just have to do the following:
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
-from websocket_server import WebsocketServer
+from websocket_server import WebSocketServer
 import time
 
 def callback(client, addr, path):
@@ -27,7 +27,7 @@ def callback(client, addr, path):
  
     time.sleep(0.5) # Pause
 
-WebsocketServer("localhost", 8080, callback)()
+WebSocketServer("localhost", 8080, callback)()
 ```
 
 In case you want to use ssl, you must do the following:
@@ -41,5 +41,5 @@ ssl_context.load_cert_chain(
 	"cert.pem", keyfile="privkey.pem"
 )
 
-WebsocketServer("localhost", 8080, callback, ssl_context)()
+WebSocketServer("localhost", 8080, callback, ssl_context)()
 ```
